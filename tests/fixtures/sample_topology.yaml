@@ -1,0 +1,104 @@
+schema_version: "1.0"
+
+metadata:
+  project_name: "Test WWTP CSA"
+  site: "Test Site"
+  revision: "A"
+  author: "Test"
+
+zones:
+  - id: "level_0"
+    name: "Field Level"
+    purdue_level: 0
+  - id: "level_1"
+    name: "Control Level"
+    purdue_level: 1
+  - id: "level_2"
+    name: "Supervisory Level"
+    purdue_level: 2
+
+controllers:
+  - id: "PLC-101"
+    type: PLC
+    manufacturer: "Allen-Bradley"
+    model: "ControlLogix 5580"
+    zone: "level_1"
+    ip_address: "192.168.1.10"
+
+  - id: "SIS-001"
+    type: Safety_PLC
+    manufacturer: "Allen-Bradley"
+    model: "GuardLogix"
+    zone: "level_1"
+    ip_address: "192.168.1.100"
+
+devices:
+  - id: "RIO-101"
+    type: RemoteIO
+    model: "1756-EN2T"
+    parent_controller: "PLC-101"
+    zone: "level_0"
+    ip_address: "192.168.1.11"
+
+  - id: "HMI-001"
+    type: HMI
+    model: "PanelView Plus 7"
+    parent_controller: "PLC-101"
+    zone: "level_1"
+    ip_address: "192.168.1.50"
+
+  - id: "SCADA-001"
+    type: SCADA
+    model: "FactoryTalk SE"
+    zone: "level_2"
+    ip_address: "192.168.2.10"
+
+  - id: "SW-001"
+    type: Switch
+    model: "Stratix 5700"
+    zone: "level_1"
+    ip_address: "192.168.1.1"
+
+  - id: "VFD-101"
+    type: VFD
+    model: "PowerFlex 525"
+    parent_controller: "PLC-101"
+    zone: "level_0"
+    ip_address: "192.168.1.201"
+
+networks:
+  - id: "control_net"
+    name: "Control Network"
+    protocol: "Ethernet_IP"
+    zone: "level_1"
+    subnet: "192.168.1.0/24"
+
+links:
+  - source: "PLC-101"
+    target: "RIO-101"
+    network: "control_net"
+    protocol: "Ethernet_IP"
+    cable_type: "Cat6 STP"
+
+  - source: "PLC-101"
+    target: "HMI-001"
+    network: "control_net"
+    protocol: "Ethernet_IP"
+
+  - source: "PLC-101"
+    target: "SW-001"
+    network: "control_net"
+    protocol: "Ethernet_IP"
+
+  - source: "PLC-101"
+    target: "VFD-101"
+    network: "control_net"
+    protocol: "Ethernet_IP"
+
+  - source: "SW-001"
+    target: "SCADA-001"
+    protocol: "Ethernet_IP"
+
+  - source: "SIS-001"
+    target: "SW-001"
+    protocol: "Ethernet_IP"
