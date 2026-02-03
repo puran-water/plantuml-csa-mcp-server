@@ -185,6 +185,46 @@ uv run pytest tests/ --cov=src
 
 **Use Both**: Same YAML topology works with both renderers. Use PlantUML for rapid iteration and documentation, FreeCAD for final engineering drawings.
 
+## Workflow Integration
+
+This server is part of the puran-water control system architecture workflow:
+
+```
+┌─────────────────────────┐     ┌──────────────────────────┐     ┌─────────────────────┐
+│  equipment-list-skill   │ ──► │  instrument-io-skill     │ ──► │  csa-diagram-skill  │
+│  (equipment + feeder)   │     │  (IO lists, patterns)    │     │  (CSA generation)   │
+└─────────────────────────┘     └──────────────────────────┘     └─────────────────────┘
+                                                                            │
+                                                                            ▼
+                                                                 ┌─────────────────────┐
+                                                                 │ plantuml-csa-mcp    │
+                                                                 │ (this server)       │
+                                                                 └─────────────────────┘
+                                                                            │
+                                                                            ▼
+                                                                 ┌─────────────────────┐
+                                                                 │ CSA Topology YAML   │
+                                                                 │ PlantUML PNG/SVG    │
+                                                                 │ Shareable URLs      │
+                                                                 └─────────────────────┘
+```
+
+## Related Projects
+
+### Upstream (Data Sources)
+- [equipment-list-skill](https://github.com/puran-water/equipment-list-skill) - Equipment lists with feeder types
+- [instrument-io-skill](https://github.com/puran-water/instrument-io-skill) - IO lists with DI/DO/AI/AO patterns
+
+### Companion Skill
+- [csa-diagram-skill](https://github.com/puran-water/csa-diagram-skill) - Claude Code skill that orchestrates this MCP server
+
+### Similar Pattern (Electrical)
+- [plantuml-sld-mcp-server](https://github.com/puran-water/plantuml-sld-mcp-server) - Single-Line Diagram generation (same YAML → PlantUML pattern)
+- [electrical-distribution-skill](https://github.com/puran-water/electrical-distribution-skill) - SLD skill using plantuml-sld-mcp-server
+
+### Alternative Renderer
+- [freecad-csa-workbench](https://github.com/puran-water/freecad-csa-workbench) - Same YAML topology rendered in FreeCAD for CAD deliverables
+
 ## License
 
 MIT
