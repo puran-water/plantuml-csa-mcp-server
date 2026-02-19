@@ -72,6 +72,45 @@ def _get_runner() -> PlantUMLRunner:
     return _runner
 
 
+def _resolve_file_input(
+    content: str | None,
+    file_path: str | None,
+    param_name: str,
+) -> str | dict:
+    """Resolve input from either inline content or file path.
+
+    File path takes precedence over inline content.
+
+    Args:
+        content: Inline string content (may be None)
+        file_path: Path to file on disk (may be None)
+        param_name: Parameter name for error messages
+
+    Returns:
+        Resolved string content, or an error dict if resolution fails
+    """
+    if file_path:
+        p = Path(file_path).expanduser().resolve()
+        if not p.exists():
+            return {
+                "success": False,
+                "isError": True,
+                "error": f"File not found: {p}",
+                "suggestion": f"Check the path to the {param_name} file",
+            }
+        resolved = p.read_text(encoding="utf-8")
+        logger.info("resolve_file_input", param=param_name, path=str(p), size=len(resolved))
+        return resolved
+    elif content:
+        return content
+    else:
+        return {
+            "success": False,
+            "isError": True,
+            "error": f"Either {param_name}_path or {param_name} (inline) must be provided",
+        }
+
+
 def _parse_topology(topology_yaml: str) -> CSATopology:
     """Parse YAML string to CSATopology model.
 
@@ -102,7 +141,8 @@ def _parse_topology(topology_yaml: str) -> CSATopology:
     }
 )
 async def csa_generate_diagram(
-    topology_yaml: str,
+    topology_yaml: str | None = None,
+    topology_path: str | None = None,
     format: Literal["svg", "png"] = "svg",
     layout: LayoutDirection = "hierarchical",
     layout_engine: LayoutEngine = "graphviz",
@@ -118,8 +158,11 @@ async def csa_generate_diagram(
     Renders a Control System Architecture diagram using PlantUML with
     ISA-95 Purdue model awareness and industrial component styling.
 
+    Accepts input as either a file path (preferred) or inline YAML string.
+
     Args:
         topology_yaml: YAML topology string (same schema as FreeCAD CSA)
+        topology_path: Path to topology YAML file on disk (preferred)
         format: Output format - 'svg' (default) or 'png'
         layout: Layout direction - 'hierarchical', 'top_to_bottom', or 'left_to_right'
         layout_engine: Layout engine - 'graphviz' (default), 'smetana', or 'elk'
@@ -133,6 +176,10 @@ async def csa_generate_diagram(
     Returns:
         Dict with success, image_data (base64), plantuml_source, file_path (if saved)
     """
+    resolved = _resolve_file_input(topology_yaml, topology_path, "topology")
+    if isinstance(resolved, dict):
+        return resolved
+
     logger.info(
         "csa_generate_diagram_started",
         format=format,
@@ -142,7 +189,7 @@ async def csa_generate_diagram(
 
     try:
         # Parse and validate topology
-        topology = _parse_topology(topology_yaml)
+        topology = _parse_topology(resolved)
 
         # Convert to PlantUML source
         converter = TopologyToPumlConverter(
@@ -220,7 +267,8 @@ async def csa_generate_diagram(
     }
 )
 async def csa_get_plantuml_source(
-    topology_yaml: str,
+    topology_yaml: str | None = None,
+    topology_path: str | None = None,
     layout: LayoutDirection = "hierarchical",
     layout_engine: LayoutEngine = "graphviz",
     show_zones: bool = True,
@@ -232,10 +280,13 @@ async def csa_get_plantuml_source(
     Returns the .puml source code for version control, manual editing,
     or CI/CD pipelines. Does NOT require PlantUML installation.
 
+    Accepts input as either a file path (preferred) or inline YAML string.
+
     Security: Disables !include directives to prevent file disclosure.
 
     Args:
-        topology_yaml: YAML topology string
+        topology_yaml: YAML topology string (inline)
+        topology_path: Path to topology YAML file on disk (preferred)
         layout: Layout direction
         layout_engine: Layout engine pragma
         show_zones: Render Purdue zone packages
@@ -245,10 +296,14 @@ async def csa_get_plantuml_source(
     Returns:
         Dict with plantuml_source, line_count, component_count
     """
+    resolved = _resolve_file_input(topology_yaml, topology_path, "topology")
+    if isinstance(resolved, dict):
+        return resolved
+
     logger.info("csa_get_plantuml_source_started", layout=layout)
 
     try:
-        topology = _parse_topology(topology_yaml)
+        topology = _parse_topology(resolved)
 
         converter = TopologyToPumlConverter(
             topology=topology,
@@ -292,7 +347,8 @@ async def csa_get_plantuml_source(
     }
 )
 async def csa_validate_topology(
-    topology_yaml: str,
+    topology_yaml: str | None = None,
+    topology_path: str | None = None,
     strict: bool = False,
 ) -> dict[str, Any]:
     """Validate YAML topology against CSA schema.
@@ -303,13 +359,20 @@ async def csa_validate_topology(
     - Reference integrity (zones, controllers, devices, links)
     - Enum values (controller types, device types, protocols)
 
+    Accepts input as either a file path (preferred) or inline YAML string.
+
     Args:
-        topology_yaml: YAML topology string to validate
+        topology_yaml: YAML topology string to validate (inline)
+        topology_path: Path to topology YAML file on disk (preferred)
         strict: If True, treat warnings as errors
 
     Returns:
         Dict with valid (bool), errors[], warnings[], summary
     """
+    resolved = _resolve_file_input(topology_yaml, topology_path, "topology")
+    if isinstance(resolved, dict):
+        return resolved
+
     logger.info("csa_validate_topology_started", strict=strict)
 
     errors: list[str] = []
@@ -317,7 +380,7 @@ async def csa_validate_topology(
 
     try:
         # Parse YAML
-        data = yaml.safe_load(topology_yaml)
+        data = yaml.safe_load(resolved)
         if not isinstance(data, dict):
             errors.append("Topology must be a YAML dictionary/object")
             return {
@@ -550,7 +613,8 @@ async def csa_encode_plantuml(
     }
 )
 async def csa_render_preview(
-    topology_yaml: str,
+    topology_yaml: str | None = None,
+    topology_path: str | None = None,
     layout_engine: LayoutEngine = "smetana",
 ) -> dict[str, Any]:
     """Quick preview render without full validation (for iteration).
@@ -558,14 +622,21 @@ async def csa_render_preview(
     Uses Smetana layout engine by default for faster rendering without
     external Graphviz dependency.
 
+    Accepts input as either a file path (preferred) or inline YAML string.
+
     Args:
-        topology_yaml: YAML topology string
+        topology_yaml: YAML topology string (inline)
+        topology_path: Path to topology YAML file on disk (preferred)
         layout_engine: Layout engine (default: 'smetana' for speed)
 
     Returns:
         Dict with preview_svg (low-res), warnings[], render_time_ms
     """
     import time
+
+    resolved = _resolve_file_input(topology_yaml, topology_path, "topology")
+    if isinstance(resolved, dict):
+        return resolved
 
     logger.info("csa_render_preview_started", layout_engine=layout_engine)
     start_time = time.monotonic()
@@ -574,7 +645,7 @@ async def csa_render_preview(
 
     try:
         # Quick parse without full validation
-        data = yaml.safe_load(topology_yaml)
+        data = yaml.safe_load(resolved)
         if not isinstance(data, dict):
             return {
                 "success": False,
@@ -710,13 +781,16 @@ async def csa_list_templates() -> dict[str, Any]:
     }
 )
 async def csa_bootstrap_from_io(
-    equipment_list_qmd: str,
-    instrument_database_yaml: str,
-    project_name: str,
+    equipment_list_qmd: str | None = None,
+    equipment_list_path: str | None = None,
+    instrument_database_yaml: str | None = None,
+    instrument_database_path: str | None = None,
+    project_name: str = "",
     architecture_template: str = "centralized",
     template_version: str = "1.0",
     mode: Literal["strict", "lenient"] = "lenient",
     overrides: dict[str, Any] | None = None,
+    output_path: str | None = None,
 ) -> dict[str, Any]:
     """Bootstrap CSA topology from equipment-list-skill + instrument-io-skill outputs.
 
@@ -724,9 +798,13 @@ async def csa_bootstrap_from_io(
     Parses equipment list (feeder_type, control_responsibility) and instrument database
     (io_signals) to auto-generate a draft CSA topology.
 
+    Accepts input as either file paths (preferred) or inline content strings.
+
     Args:
-        equipment_list_qmd: QMD file content with YAML frontmatter (from equipment-list-skill)
-        instrument_database_yaml: YAML content from instrument-io-skill database.yaml
+        equipment_list_qmd: QMD file content inline (from equipment-list-skill)
+        equipment_list_path: Path to equipment-list QMD file on disk (preferred over inline)
+        instrument_database_yaml: YAML content inline (from instrument-io-skill)
+        instrument_database_path: Path to instrument database YAML file on disk (preferred over inline)
         project_name: Project name for CSA topology
         architecture_template: Template name - 'centralized', 'central_mcc_distributed_io',
             'fully_distributed', 'hybrid_safety', 'vendor_package_integration'
@@ -737,10 +815,12 @@ async def csa_bootstrap_from_io(
             - panel_counts: Override panel allocation per area
             - protocol_preferences: Preferred protocols ["Profinet", "Ethernet_IP"]
             - redundancy: Redundancy settings per controller type
+        output_path: Optional path to save topology YAML file on disk
 
     Returns:
         Dict with:
         - topology_yaml: Draft CSA topology YAML for refinement
+        - file_path: Path to saved file (if output_path was provided)
         - suggestions: Human review items
         - io_summary: DI/DO/AI/AO/PI/PO counts per area
         - equipment_mapping: Which equipment -> which PLC
@@ -757,9 +837,19 @@ async def csa_bootstrap_from_io(
     )
 
     try:
+        # Resolve equipment list input
+        resolved_equip = _resolve_file_input(equipment_list_qmd, equipment_list_path, "equipment_list")
+        if isinstance(resolved_equip, dict):
+            return resolved_equip
+
+        # Resolve instrument database input
+        resolved_inst = _resolve_file_input(instrument_database_yaml, instrument_database_path, "instrument_database")
+        if isinstance(resolved_inst, dict):
+            return resolved_inst
+
         result = bootstrap_csa_topology(
-            equipment_list_qmd=equipment_list_qmd,
-            instrument_database_yaml=instrument_database_yaml,
+            equipment_list_qmd=resolved_equip,
+            instrument_database_yaml=resolved_inst,
             project_name=project_name,
             architecture_template=architecture_template,
             template_version=template_version,
@@ -768,6 +858,15 @@ async def csa_bootstrap_from_io(
         )
 
         result["success"] = True
+
+        # Save topology to disk if output_path provided
+        if output_path:
+            out = Path(output_path).expanduser().resolve()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(result["topology_yaml"], encoding="utf-8")
+            result["file_path"] = str(out)
+            logger.info("csa_topology_saved", path=str(out))
+
         return result
 
     except ValueError as e:

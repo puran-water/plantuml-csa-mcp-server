@@ -28,6 +28,19 @@ from ..templates import ArchitectureTemplate, TemplateOverrides, get_template
 
 logger = structlog.get_logger(__name__)
 
+
+def _extract_area(tag: str) -> str:
+    """Extract area code from equipment or instrument tag. Consistent across all paths."""
+    # Try leading digits (standard: 200-P-01)
+    m = re.match(r"(\d{3,4})", tag)
+    if m:
+        return m.group(1)
+    # Try embedded (ISA: PIT-200-01)
+    m = re.search(r"[A-Z]+-(\d{3,4})-", tag)
+    if m:
+        return m.group(1)
+    return "000"
+
 # IO module sizing (typical Allen-Bradley 1756 modules)
 IO_MODULE_SIZES = {
     "DI": 32,  # Points per module
@@ -116,15 +129,28 @@ def calculate_io_summary(
         instruments = instrument_db.get("database", [])
 
     for inst in instruments:
-        # Extract area from tag (e.g., "200-FT-001" -> "200")
-        tag = inst.get("tag", inst.get("equipment_tag", ""))
-        area_match = re.match(r"(\d+)", tag)
-        area = area_match.group(1) if area_match else "000"
+        # Extract area from equipment_tag first (ISA format: "200-TK-03" → "200"),
+        # then fall back to instrument tag (which may start with letters: "LIT-200-03")
+        area = "000"
+
+        # Strategy 1: equipment_tag field (most reliable — direct ISA equipment ref)
+        eq_tag = inst.get("equipment_tag", "") or ""
+        extracted = _extract_area(eq_tag)
+        if extracted != "000":
+            area = extracted
+        else:
+            # Strategy 2: instrument tag — handle nested tag dict
+            raw_tag = inst.get("tag", "")
+            if isinstance(raw_tag, dict):
+                tag = raw_tag.get("full_tag", "") or ""
+            else:
+                tag = raw_tag or ""
+            area = _extract_area(tag)
 
         # Count IO signals
-        signals = inst.get("io_signals", inst.get("signals", []))
+        signals = inst.get("io_signals") or inst.get("signals") or []
         for signal in signals:
-            io_type = signal.get("io_type", signal.get("type", "")).upper()
+            io_type = (signal.get("io_type") or signal.get("type") or "").upper()
             if io_type in io_counts[area]:
                 io_counts[area][io_type] += 1
 
@@ -230,10 +256,9 @@ def bootstrap_csa_topology(
 
     for equip in equipment_list:
         tag = equip.get("tag", equip.get("equipment_tag", ""))
-        area_match = re.match(r"(\d+)", tag)
-        area = area_match.group(1) if area_match else "000"
+        area = _extract_area(tag)
 
-        control_resp = equip.get("control_responsibility", "plc").lower()
+        control_resp = (equip.get("control_responsibility") or "plc").lower()
         if control_resp == "vendor":
             vendor_packages.append(equip)
         else:
@@ -256,7 +281,7 @@ def bootstrap_csa_topology(
         name="Device Network",
         protocol=ProtocolType(template.primary_protocol),
         zone="level_0",
-        subnet="192.168.1.0/24",
+        subnet="192.168.2.0/24",
     )
     networks.append(device_net)
 
@@ -283,7 +308,8 @@ def bootstrap_csa_topology(
                     equipment_mapping[tag] = "PLC-001"
 
     else:
-        # PLC per area
+        # PLC per area — enumerate unique areas for collision-free IPs
+        area_ip_map = {a: f"192.168.1.{10 + i}" for i, a in enumerate(areas)}
         for area in areas:
             plc_id = f"PLC-{area}"
             plc = CSAControllerDef(
@@ -291,7 +317,7 @@ def bootstrap_csa_topology(
                 type=ControllerType.PLC,
                 zone="level_1",
                 redundancy=RedundancyType(template.redundancy_type),
-                ip_address=f"192.168.1.{10 + int(area) // 100}",
+                ip_address=area_ip_map[area],
                 description=f"Area {area} PLC",
                 equipment_tags=[],
             )
@@ -317,7 +343,8 @@ def bootstrap_csa_topology(
         controllers.append(safety_plc)
 
     # Create Remote IO / VFDs based on template
-    ip_counter = 100
+    device_ip_counter = 100
+    rio_node_ids: set[str] = set()
 
     for area in areas:
         area_equip = equipment_by_area[area]
@@ -337,11 +364,12 @@ def bootstrap_csa_topology(
                 type=DeviceType.REMOTE_IO,
                 parent_controller=parent_plc,
                 zone="level_0",
-                ip_address=f"192.168.1.{ip_counter}",
+                ip_address=f"192.168.2.{device_ip_counter}",
                 description=f"Area {area} Remote IO",
             )
             devices.append(rio)
-            ip_counter += 1
+            rio_node_ids.add(rio_id)
+            device_ip_counter += 1
 
             # Link to parent PLC
             links.append(
@@ -361,7 +389,7 @@ def bootstrap_csa_topology(
 
         # Create VFDs
         for equip in area_equip:
-            feeder_type = equip.get("feeder_type", "").upper()
+            feeder_type = (equip.get("feeder_type") or "").upper()
             tag = equip.get("tag", equip.get("equipment_tag", ""))
 
             if feeder_type == "VFD":
@@ -371,16 +399,22 @@ def bootstrap_csa_topology(
                     type=DeviceType.VFD,
                     parent_controller=parent_plc,
                     zone="level_0",
-                    ip_address=f"192.168.1.{ip_counter}",
+                    ip_address=f"192.168.2.{device_ip_counter}",
                     description=f"VFD for {tag}",
                 )
                 devices.append(vfd)
-                ip_counter += 1
+                device_ip_counter += 1
 
-                # Link to parent PLC
+                # Determine link source: RIO if distributed, PLC if centralized
+                if template.io_location == "distributed":
+                    rio_id = f"RIO-{area}"
+                    vfd_link_source = rio_id if rio_id in rio_node_ids else parent_plc
+                else:
+                    vfd_link_source = parent_plc
+
                 links.append(
                     CSALinkDef(
-                        source=parent_plc,
+                        source=vfd_link_source,
                         target=vfd_id,
                         protocol=ProtocolType(template.primary_protocol),
                         network="device_net",
@@ -398,6 +432,22 @@ def bootstrap_csa_topology(
                 )
                 devices.append(ss)
 
+                # Determine link source: RIO if distributed, PLC if centralized
+                if template.io_location == "distributed":
+                    rio_id = f"RIO-{area}"
+                    ss_link_source = rio_id if rio_id in rio_node_ids else parent_plc
+                else:
+                    ss_link_source = parent_plc
+
+                links.append(
+                    CSALinkDef(
+                        source=ss_link_source,
+                        target=ss_id,
+                        protocol=ProtocolType(template.primary_protocol),
+                        network="device_net",
+                    )
+                )
+
     # Handle vendor packages
     for pkg in vendor_packages:
         tag = pkg.get("tag", pkg.get("equipment_tag", ""))
@@ -408,11 +458,11 @@ def bootstrap_csa_topology(
             id=pkg_id,
             type=ControllerType.PLC,
             zone="level_1",
-            ip_address=f"192.168.1.{ip_counter}",
+            ip_address=f"192.168.1.{device_ip_counter}",
             description=f"Vendor PLC - {tag}",
         )
         controllers.append(vendor_plc)
-        ip_counter += 1
+        device_ip_counter += 1
 
         suggestions.append(
             f"Vendor package '{tag}': Create OPC-UA gateway and hardwired interlocks"
